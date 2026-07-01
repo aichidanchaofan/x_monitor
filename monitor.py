@@ -1,9 +1,8 @@
 import os
 import json
-import requests
 import time
+import requests
 from playwright.sync_api import sync_playwright
-from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
@@ -13,7 +12,7 @@ STATE_FILE = "state.json"
 
 
 # -----------------------------
-# JSON
+# JSON 工具
 # -----------------------------
 def load_json(path):
     if not os.path.exists(path):
@@ -31,48 +30,65 @@ def save_json(path, data):
 # Telegram
 # -----------------------------
 def send_telegram(text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
         requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": text},
+            url,
+            data={
+                "chat_id": CHAT_ID,
+                "text": text,
+                "disable_web_page_preview": False
+            },
             timeout=10
         )
     except Exception as e:
-        print("[TELEGRAM FAIL]", e)
+        print("[TELEGRAM ERROR]", e)
 
 
 # -----------------------------
-# 方法1：Playwright（主）
+# ⭐ 核心抓取（稳定版）
 # -----------------------------
-def fetch_playwright(user):
+def fetch_latest_tweet(user):
+    url = f"https://x.com/{user}"
+
     try:
-        url = f"https://x.com/{user}"
-
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
                 args=["--no-sandbox"]
             )
-            page = browser.new_page()
 
-            print(f"[PLAYWRIGHT] open {url}")
+            page = browser.new_page()
+            print(f"[OPEN] {url}")
+
             page.goto(url, timeout=30000)
             page.wait_for_timeout(6000)
 
-            articles = page.query_selector_all("article")
+            tweets = page.locator("article").all()
 
-            if not articles:
-                browser.close()
-                return None
+            for t in tweets:
+                try:
+                    text_blocks = t.locator("[data-testid='tweetText']")
 
-            first = articles[0]
-            text = first.inner_text().strip()
+                    if text_blocks.count() == 0:
+                        continue
 
-            tweet_id = str(hash(text))
+                    text = text_blocks.first.inner_text().strip()
+
+                    # ❌ 过滤 pinned / 空内容
+                    if not text or "Pinned" in text:
+                        continue
+
+                    tweet_id = str(hash(text))
+
+                    browser.close()
+                    return tweet_id, text, url
+
+                except:
+                    continue
 
             browser.close()
-
-            return tweet_id, text, url
+            return None
 
     except Exception as e:
         print("[PLAYWRIGHT ERROR]", e)
@@ -80,59 +96,11 @@ def fetch_playwright(user):
 
 
 # -----------------------------
-# 方法2：静态HTML fallback
-# -----------------------------
-def fetch_fallback(user):
-    try:
-        url = f"https://x.com/{user}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-
-        r = requests.get(url, headers=headers, timeout=10)
-
-        if r.status_code != 200:
-            return None
-
-        soup = BeautifulSoup(r.text, "lxml")
-        text = soup.get_text()
-
-        if len(text) < 50:
-            return None
-
-        tweet_id = str(hash(text[:500]))
-
-        return tweet_id, text[:500], url
-
-    except Exception as e:
-        print("[FALLBACK ERROR]", e)
-        return None
-
-
-# -----------------------------
-# 多层抓取
-# -----------------------------
-def fetch_latest(user):
-    print(f"[FETCH] {user}")
-
-    # 1. Playwright
-    result = fetch_playwright(user)
-    if result:
-        return result
-
-    print("[FALLBACK] switching...")
-
-    # 2. fallback
-    result = fetch_fallback(user)
-    if result:
-        return result
-
-    return None
-
-
-# -----------------------------
 # 主逻辑
 # -----------------------------
 def main():
-    print("===== V5 PRO START =====")
+    print("===== V5.8 X MONITOR START =====")
+    print(f"[HEARTBEAT] {time.time()}")
 
     accounts = load_json(ACCOUNTS_FILE)["users"]
     state = load_json(STATE_FILE)
@@ -140,7 +108,7 @@ def main():
     print("Accounts:", accounts)
 
     for user in accounts:
-        result = fetch_latest(user)
+        result = fetch_latest_tweet(user)
 
         print(f"[DEBUG] {user} -> {result}")
 
