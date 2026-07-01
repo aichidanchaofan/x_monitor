@@ -1,9 +1,8 @@
-import requests
-import feedparser
-import json
 import os
-import random
+import json
+import requests
 import time
+from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -12,18 +11,9 @@ CHAT_ID = os.environ["CHAT_ID"]
 ACCOUNTS_FILE = "accounts.json"
 STATE_FILE = "state.json"
 
-# -----------------------------
-# RSSHub 镜像池（关键升级）
-# -----------------------------
-RSSHUB_NODES = [
-    "https://rsshub.app",
-    "https://rsshub.pseudoyu.com",
-    "https://rsshub.feeded.xyz"
-]
-
 
 # -----------------------------
-# 工具函数
+# JSON
 # -----------------------------
 def load_json(path):
     if not os.path.exists(path):
@@ -37,95 +27,104 @@ def save_json(path, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+# -----------------------------
+# Telegram
+# -----------------------------
 def send_telegram(text):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        requests.post(url, data={
-            "chat_id": CHAT_ID,
-            "text": text,
-            "disable_web_page_preview": False
-        }, timeout=10)
+        requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": text},
+            timeout=10
+        )
     except Exception as e:
-        print("[TELEGRAM ERROR]", e)
+        print("[TELEGRAM FAIL]", e)
 
 
 # -----------------------------
-# RSSHub 多节点抓取
+# 方法1：Playwright（主）
 # -----------------------------
-def fetch_from_rsshub(user):
-    nodes = RSSHUB_NODES[:]
-    random.shuffle(nodes)
-
-    for node in nodes:
-        try:
-            url = f"{node}/twitter/user/{user}"
-            print(f"[RSSHUB TRY] {url}")
-
-            feed = feedparser.parse(url)
-
-            if feed.entries:
-                e = feed.entries[0]
-                return e.link, e.title, e.link
-
-        except Exception as e:
-            print(f"[RSSHUB FAIL] {node}: {e}")
-
-    return None
-
-
-# -----------------------------
-# Nitter fallback
-# -----------------------------
-def fetch_from_nitter(user):
+def fetch_playwright(user):
     try:
-        url = f"https://nitter.net/{user}"
-        headers = {"User-Agent": "Mozilla/5.0"}
+        url = f"https://x.com/{user}"
 
-        r = requests.get(url, headers=headers, timeout=8)
-        if r.status_code != 200:
-            return None
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox"]
+            )
+            page = browser.new_page()
 
-        soup = BeautifulSoup(r.text, "lxml")
-        tweet = soup.find("div", class_="timeline-item")
+            print(f"[PLAYWRIGHT] open {url}")
+            page.goto(url, timeout=30000)
+            page.wait_for_timeout(6000)
 
-        if not tweet:
-            return None
+            articles = page.query_selector_all("article")
 
-        content = tweet.find("div", class_="tweet-content")
-        link = tweet.find("a", class_="tweet-link")
+            if not articles:
+                browser.close()
+                return None
 
-        if not content or not link:
-            return None
+            first = articles[0]
+            text = first.inner_text().strip()
 
-        tweet_id = link["href"]
-        text = content.get_text(strip=True)
+            tweet_id = str(hash(text))
 
-        return tweet_id, text, f"https://nitter.net{tweet_id}"
+            browser.close()
+
+            return tweet_id, text, url
 
     except Exception as e:
-        print("[NITTER ERROR]", e)
+        print("[PLAYWRIGHT ERROR]", e)
         return None
 
 
 # -----------------------------
-# 多源统一入口
+# 方法2：静态HTML fallback
+# -----------------------------
+def fetch_fallback(user):
+    try:
+        url = f"https://x.com/{user}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+
+        r = requests.get(url, headers=headers, timeout=10)
+
+        if r.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(r.text, "lxml")
+        text = soup.get_text()
+
+        if len(text) < 50:
+            return None
+
+        tweet_id = str(hash(text[:500]))
+
+        return tweet_id, text[:500], url
+
+    except Exception as e:
+        print("[FALLBACK ERROR]", e)
+        return None
+
+
+# -----------------------------
+# 多层抓取
 # -----------------------------
 def fetch_latest(user):
-    sources = [
-        fetch_from_rsshub,
-        fetch_from_nitter
-    ]
+    print(f"[FETCH] {user}")
 
-    for src in sources:
-        try:
-            result = src(user)
-            if result:
-                print(f"[SOURCE OK] {user} -> {src.__name__}")
-                return result
-        except Exception as e:
-            print(f"[SOURCE FAIL] {src.__name__}: {e}")
+    # 1. Playwright
+    result = fetch_playwright(user)
+    if result:
+        return result
 
-    print(f"[ALL SOURCES FAILED] {user}")
+    print("[FALLBACK] switching...")
+
+    # 2. fallback
+    result = fetch_fallback(user)
+    if result:
+        return result
+
     return None
 
 
@@ -133,14 +132,12 @@ def fetch_latest(user):
 # 主逻辑
 # -----------------------------
 def main():
-    print("===== V4 X MONITOR START =====")
-    print(f"[HEARTBEAT] {time.time()}")
+    print("===== V5 PRO START =====")
 
     accounts = load_json(ACCOUNTS_FILE)["users"]
     state = load_json(STATE_FILE)
 
     print("Accounts:", accounts)
-    print("State before:", state)
 
     for user in accounts:
         result = fetch_latest(user)
@@ -160,7 +157,7 @@ def main():
 
 👤 @{user}
 
-📝 {text}
+📝 {text[:800]}
 
 🔗 {url}"""
 
