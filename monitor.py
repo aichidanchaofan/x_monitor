@@ -58,6 +58,7 @@ def fetch_latest_tweet(user):
 
 
 def main():
+    send_telegram("🧪 测试：GitHub Actions & Telegram 正常")
     accounts = load_json(ACCOUNTS_FILE)["users"]
     state = load_json(STATE_FILE)
 
