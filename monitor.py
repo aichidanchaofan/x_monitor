@@ -2,7 +2,6 @@ import os
 import json
 import time
 import requests
-from playwright.sync_api import sync_playwright
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
@@ -12,7 +11,7 @@ STATE_FILE = "state.json"
 
 
 # -----------------------------
-# JSON 工具
+# JSON
 # -----------------------------
 def load_json(path):
     if not os.path.exists(path):
@@ -32,66 +31,81 @@ def save_json(path, data):
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        requests.post(
-            url,
-            data={
-                "chat_id": CHAT_ID,
-                "text": text,
-                "disable_web_page_preview": False
-            },
-            timeout=10
-        )
+        requests.post(url, data={
+            "chat_id": CHAT_ID,
+            "text": text,
+            "disable_web_page_preview": False
+        }, timeout=10)
     except Exception as e:
         print("[TELEGRAM ERROR]", e)
 
 
 # -----------------------------
-# ⭐ 核心抓取（稳定版）
+# 获取 guest token（关键）
 # -----------------------------
-def fetch_latest_tweet(user):
-    url = f"https://x.com/{user}"
+def get_guest_token():
+    headers = {
+        "authorization": "Bearer AAAAAAAAAAAAAAAAAAAAA",  # X 公共 guest token机制
+        "user-agent": "Mozilla/5.0",
+    }
 
+    r = requests.post(
+        "https://api.twitter.com/1.1/guest/activate.json",
+        headers=headers,
+        timeout=10
+    )
+
+    if r.status_code != 200:
+        print("[GUEST TOKEN FAIL]", r.text)
+        return None
+
+    return r.json()["guest_token"]
+
+
+# -----------------------------
+# 获取 timeline（核心）
+# -----------------------------
+def fetch_latest(user, guest_token):
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox"]
-            )
+        url = f"https://api.twitter.com/2/timeline/profile/{user}.json?tweet_mode=extended"
 
-            page = browser.new_page()
-            print(f"[OPEN] {url}")
+        headers = {
+            "authorization": "Bearer AAAAAAAAAAAAAAAAAAAAA",
+            "x-guest-token": guest_token,
+            "user-agent": "Mozilla/5.0",
+        }
 
-            page.goto(url, timeout=30000)
-            page.wait_for_timeout(6000)
+        r = requests.get(url, headers=headers, timeout=10)
 
-            tweets = page.locator("article").all()
-
-            for t in tweets:
-                try:
-                    text_blocks = t.locator("[data-testid='tweetText']")
-
-                    if text_blocks.count() == 0:
-                        continue
-
-                    text = text_blocks.first.inner_text().strip()
-
-                    # ❌ 过滤 pinned / 空内容
-                    if not text or "Pinned" in text:
-                        continue
-
-                    tweet_id = str(hash(text))
-
-                    browser.close()
-                    return tweet_id, text, url
-
-                except:
-                    continue
-
-            browser.close()
+        if r.status_code != 200:
+            print("[FETCH FAIL]", r.status_code)
             return None
 
+        data = r.json()
+
+        instructions = data.get("timeline", {}).get("instructions", [])
+
+        for ins in instructions:
+            entries = ins.get("entries", [])
+            for e in entries:
+                content = e.get("content", {})
+                item = content.get("itemContent", {})
+                tweet = item.get("tweet_results", {}).get("result", {})
+
+                legacy = tweet.get("legacy", {})
+                text = legacy.get("full_text")
+
+                if not text:
+                    continue
+
+                tweet_id = legacy.get("id_str")
+
+                return tweet_id, text, f"https://x.com/{user}/status/{tweet_id}"
+
+        return None
+
     except Exception as e:
-        print("[PLAYWRIGHT ERROR]", e)
+        print("[ERROR]", e)
         return None
 
 
@@ -99,16 +113,23 @@ def fetch_latest_tweet(user):
 # 主逻辑
 # -----------------------------
 def main():
-    print("===== V5.8 X MONITOR START =====")
-    print(f"[HEARTBEAT] {time.time()}")
+    print("===== V6 X MONITOR START =====")
 
     accounts = load_json(ACCOUNTS_FILE)["users"]
     state = load_json(STATE_FILE)
 
     print("Accounts:", accounts)
 
+    guest_token = get_guest_token()
+
+    if not guest_token:
+        print("NO GUEST TOKEN")
+        return
+
     for user in accounts:
-        result = fetch_latest_tweet(user)
+        print(f"[FETCH] {user}")
+
+        result = fetch_latest(user, guest_token)
 
         print(f"[DEBUG] {user} -> {result}")
 
