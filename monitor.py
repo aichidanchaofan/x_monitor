@@ -1,7 +1,7 @@
 import requests
+import feedparser
 import json
 import os
-from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
@@ -32,65 +32,60 @@ def send_telegram(text):
 
 
 def fetch_latest_tweet(user):
-    url = f"https://nitter.net/{user}"
-    headers = {"User-Agent": "Mozilla/5.0"}
+    url = f"https://rsshub.app/twitter/user/{user}"
 
-    r = requests.get(url, headers=headers, timeout=20)
-    if r.status_code != 200:
+    try:
+        feed = feedparser.parse(url)
+        if not feed.entries:
+            return None
+
+        entry = feed.entries[0]
+
+        tweet_id = entry.link
+        text = entry.title
+
+        return tweet_id, text, entry.link
+
+    except Exception as e:
+        print(f"RSS error {user}: {e}")
         return None
-
-    soup = BeautifulSoup(r.text, "lxml")
-
-    tweet = soup.find("div", class_="timeline-item")
-    if not tweet:
-        return None
-
-    content = tweet.find("div", class_="tweet-content")
-    link = tweet.find("a", class_="tweet-link")
-
-    if not content or not link:
-        return None
-
-    tweet_id = link["href"]
-    text = content.get_text(strip=True)
-
-    return tweet_id, text, f"https://nitter.net{tweet_id}"
 
 
 def main():
-    send_telegram("🧪 测试：GitHub Actions & Telegram 正常")
-    print("===== X MONITOR START =====")
+    print("===== V2 X MONITOR START =====")
+
     accounts = load_json(ACCOUNTS_FILE)["users"]
     state = load_json(STATE_FILE)
+
     print("Accounts:", accounts)
-    print("State before run:", state)
+    print("State:", state)
 
     for user in accounts:
-        try:
-            result = fetch_latest_tweet(user)
-            print(f"[DEBUG] {user} -> {result}")
-            if not result:
-                continue
+        result = fetch_latest_tweet(user)
 
-            tweet_id, text, url = result
+        print(f"[DEBUG] {user} -> {result}")
 
-            if state.get(user) == tweet_id:
-                continue
+        if not result:
+            continue
 
-            message = f"""📢 新推文
+        tweet_id, text, url = result
+
+        if state.get(user) == tweet_id:
+            print(f"[SKIP] {user} no update")
+            continue
+
+        message = f"""📢 新推文
 
 👤 @{user}
 
 📝 {text}
 
 🔗 {url}"""
-            print(f"Sending to Telegram: {user}")
-            send_telegram(message)
 
-            state[user] = tweet_id
+        print(f"[SEND] {user}")
+        send_telegram(message)
 
-        except Exception as e:
-            print(f"Error {user}: {e}")
+        state[user] = tweet_id
 
     save_json(STATE_FILE, state)
 
